@@ -226,6 +226,5 @@ while True:
         clicked = False
         time.sleep(POLL_INTERVAL)
 
-
     last_total = current
     
