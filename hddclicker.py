@@ -11,7 +11,7 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
 CLICK_DIR = BASE_DIR / "Samples"
-LOOP_SAMPLE = BASE_DIR / "looping.wav"
+AMBIENT_LOOP_SAMPLE = BASE_DIR / "ambient_loop.wav"
 
 PCM_DEVICE = b"pipewire"
 
@@ -64,20 +64,19 @@ alsa.snd_pcm_prepare.restype = ctypes.c_int
 
 # ---------------- LOAD CLICK SOUNDS ----------------
 
-click_frames = []
+click_samples = []
 
 for wavfile in sorted(CLICK_DIR.glob("*.wav")):
-    with wave.open(str(wavfile), "rb") as wf:
-        channels = wf.getnchannels()
-        rate = wf.getframerate()
-        frames = wf.readframes(wf.getnframes())
+    # with wave.open(str(wavfile), "rb") as wf:
+    wf = wave.open(str(wavfile), "rb")
+    channels = wf.getnchannels()
+    rate = wf.getframerate()
+    click_samples.append({
+        "sample": wf,
+        "channels": channels
+    })
 
-        click_frames.append({
-            "frames": frames,
-            "frame_count": len(frames) // (channels * 2),
-        })
-
-if not click_frames:
+if not click_samples:
     raise RuntimeError("No click WAV files found")
 
 # use click format from first sample (assume consistency)
@@ -109,7 +108,7 @@ if alsa.snd_pcm_set_params(
 
 # ---------------- OPEN AMBIENT PCM ----------------
 
-with wave.open(str(LOOP_SAMPLE), "rb") as wf:
+with wave.open(str(AMBIENT_LOOP_SAMPLE), "rb") as wf:
     amb_channels = wf.getnchannels()
     amb_rate = wf.getframerate()
 
@@ -132,38 +131,6 @@ if alsa.snd_pcm_set_params(
 ) < 0:
     raise RuntimeError("Failed to configure ambient PCM")
 
-
-# ---------------- CLICK ENGINE ----------------
-
-last_sample_index = -1
-
-def play_click():
-    global last_sample_index
-
-    count = len(click_frames)
-
-    if count == 1:
-        idx = 0
-    else:
-        idx = random.randrange(count)
-        if idx == last_sample_index:
-            idx = (idx + 1) % count
-
-    last_sample_index = idx
-    sample = click_frames[idx]
-
-    buf = ctypes.create_string_buffer(sample["frames"])
-
-    result = alsa.snd_pcm_writei(
-        click_handle,
-        buf,
-        sample["frame_count"],
-    )
-
-    if result < 0:
-        alsa.snd_pcm_prepare(click_handle)
-
-
 # ---------------- DISK ACTIVITY ----------------
 
 def get_disk_activity():
@@ -182,13 +149,38 @@ def get_disk_activity():
 
     return total
 
+# ---------------- CLICK LOOP ------------------
+
+def play_click():
+    chunk_frames = 4096
+    count = len(click_samples)
+    click_loop_sample = click_samples[random.randrange(count)]
+    
+    sample = click_loop_sample['sample']
+    channels = click_loop_sample['channels']
+    data = sample.readframes(chunk_frames)
+
+    if not data:
+        sample.rewind()
+
+    buf = ctypes.create_string_buffer(data)
+
+    frames = len(data) // (channels * 2)
+
+    result = alsa.snd_pcm_writei(
+        click_handle,
+        buf,
+        frames,
+    )
+
+    if result < 0:
+        alsa.snd_pcm_prepare(click_handle)
 
 # ---------------- AMBIENT LOOP ----------------
 
 def ambient_loop():
-    wf = wave.open(str(LOOP_SAMPLE), "rb")
     chunk_frames = 2048
-
+    wf = wave.open(str(AMBIENT_LOOP_SAMPLE), "rb")
     channels = wf.getnchannels()
 
     while True:
@@ -215,9 +207,9 @@ def ambient_loop():
 # ---------------- MAIN LOOP ----------------
 
 last_total = get_disk_activity()
-last_click = 0
+clicked = False
 
-print("diskclickd running...")
+print("hddclicker running...")
 
 threading.Thread(target=ambient_loop, daemon=True).start()
 
@@ -225,12 +217,15 @@ while True:
     current = get_disk_activity()
     delta = current - last_total
     now = time.time()
+    
+    # Lengthen the clicking a bit at random since SSD activity is too fast to make it realistic
+    if delta >= MIN_ACTIVITY_DELTA or (clicked and random.random() > 0.2): 
+        play_click()
+        clicked = True
+    else:
+        clicked = False
+        time.sleep(POLL_INTERVAL)
 
-    if delta >= MIN_ACTIVITY_DELTA:
-        if now - last_click > COOLDOWN:
-            if random.random() > 0.15:
-                play_click()
-                last_click = now
 
     last_total = current
-    time.sleep(POLL_INTERVAL)
+    
