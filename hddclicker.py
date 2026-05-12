@@ -17,7 +17,6 @@ PCM_DEVICE = b"pipewire"
 
 POLL_INTERVAL = 0.05
 MIN_ACTIVITY_DELTA = 2
-COOLDOWN = 0.015
 
 # ---------------- ALSA SETUP ----------------
 
